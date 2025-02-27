@@ -1,0 +1,90 @@
+name: ASAN
+
+on: [push, pull_request]
+
+jobs:
+  static:
+    name: protobuf-${{ matrix.protobuf-version }}, static
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        protobuf-version: [v28.1, v29.0]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install ninja
+      run: |
+        sudo apt install -y ninja-build
+    - name: Install clang-19
+      run: |
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 19
+    - name: Build and install
+      shell: bash # enable pipefail
+      run: |
+        git clone --recurse-submodules -b ${{ matrix.protobuf-version }} https://github.com/protocolbuffers/protobuf
+        cd protobuf && mkdir build && cd build
+        CXXFLAGS="-O0 -fsanitize=address -fno-omit-frame-pointer" \
+          CFLAGS="-O0 -fsanitize=address -fno-omit-frame-pointer" \
+          LDFLAGS="-fsanitize=address" \
+          CC=clang-19 CXX=clang++-19 cmake -G Ninja \
+          -Dprotobuf_BUILD_TESTS=OFF \
+          ..
+        sudo ninja -v install | tee log.txt
+    - name: Get compile/link commands that are not using -fsanitize
+      run: |
+        grep '/usr/bin/clang' protobuf/build/log.txt | grep -v fsanitize || true
+    - name: Build and run example using 'repeated'
+      continue-on-error: true
+      run: |
+        cd test && mkdir build && cd build
+        CXXFLAGS="-O0 -fsanitize=address -fno-omit-frame-pointer" \
+          LDFLAGS="-fsanitize=address" \
+          CC=clang-19 CXX=clang++-19 cmake ..
+        VERBOSE=1 make
+        ./test
+
+  shared:
+    name: protobuf-${{ matrix.protobuf-version }}, DSO
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        protobuf-version: [v28.1, v29.0]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install ninja
+      run: |
+        sudo apt install -y ninja-build
+    - name: Install clang-19
+      run: |
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 19
+    - name: Build and install
+      shell: bash # enable pipefail
+      run: |
+        git clone --recurse-submodules -b ${{ matrix.protobuf-version }} https://github.com/protocolbuffers/protobuf
+        cd protobuf && mkdir build && cd build
+        CXXFLAGS="-O0 -fsanitize=address -fno-omit-frame-pointer" \
+          CFLAGS="-O0 -fsanitize=address -fno-omit-frame-pointer" \
+          LDFLAGS="-fsanitize=address -shared-libsan -Wl,-rpath=$(dirname $(clang-19 --print-file-name=libclang_rt.asan-x86_64.so))" \
+          CC=clang-19 CXX=clang++-19 cmake -G Ninja \
+          -DCMAKE_INSTALL_PREFIX=/usr \
+          -DBUILD_SHARED_LIBS=ON \
+          -Dprotobuf_BUILD_TESTS=OFF \
+          ..
+        sudo ninja -v install | tee log.txt
+    - name: Get compile/link commands that are not using -fsanitize
+      run: |
+        grep '/usr/bin/clang' protobuf/build/log.txt | grep -v fsanitize || true
+    - name: Build and run example using 'repeated'
+      continue-on-error: true
+      run: |
+        cd test && mkdir build && cd build
+        CXXFLAGS="-O0 -fsanitize=address -fno-omit-frame-pointer" \
+          LDFLAGS="-fsanitize=address -shared-libsan -Wl,-rpath=$(dirname $(clang-19 --print-file-name=libclang_rt.asan-x86_64.so))" \
+          CC=clang-19 CXX=clang++-19 cmake ..
+        VERBOSE=1 make
+        LD_PRELOAD=$(clang-19 --print-file-name=libclang_rt.asan-x86_64.so) ./test
